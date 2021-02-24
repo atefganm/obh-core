@@ -1,0 +1,195 @@
+from os import statvfs
+from boxbranding import getMachineBuild
+from Components.ActionMap import ActionMap
+from Components.ChoiceList import ChoiceList, ChoiceEntryComponent
+from Components.config import config
+from Components.Label import Label
+from Components.Sources.StaticText import StaticText
+from Components.SystemInfo import SystemInfo
+from Screens.Console import Console
+from Screens.MessageBox import MessageBox
+from Screens.Screen import Screen
+from Screens.Standby import TryQuitMainloop
+from Tools.BoundFunction import boundFunction
+from Tools.Directories import pathExists
+from Tools.Multiboot import GetImagelist, GetCurrentImage, GetCurrentImageMode, EmptySlot
+
+class MultiBoot(Screen):
+
+	skin = """
+	<screen name="MultiBoot" position="center,center" size="750,900" flags="wfNoBorder" backgroundColor="transparent">
+		<eLabel name="b" position="0,0" size="750,700" backgroundColor="#00ffffff" zPosition="-2" />
+		<eLabel name="a" position="1,1" size="748,698" backgroundColor="#00000000" zPosition="-1" />
+		<widget source="Title" render="Label" position="60,10" foregroundColor="#00ffffff" size="480,50" halign="left" font="Regular; 28" backgroundColor="#00000000" />
+		<eLabel name="line" position="1,60" size="748,1" backgroundColor="#00ffffff" zPosition="1" />
+		<eLabel name="line2" position="1,250" size="748,4" backgroundColor="#00ffffff" zPosition="1" />
+		<widget name="config" position="2,280" size="730,380" halign="center" font="Regular; 22" backgroundColor="#00000000" foregroundColor="#00e5b243" />
+		<widget source="labe14" render="Label" position="2,80" size="730,30" halign="center" font="Regular; 22" backgroundColor="#00000000" foregroundColor="#00ffffff" />
+		<widget source="labe15" render="Label" position="2,130" size="730,60" halign="center" font="Regular; 22" backgroundColor="#00000000" foregroundColor="#00ffffff" />
+		<widget source="key_red" render="Label" position="30,200" size="150,30" noWrap="1" zPosition="1" valign="center" font="Regular; 20" halign="left" backgroundColor="#00000000" foregroundColor="#00ffffff" />
+		<widget source="key_green" render="Label" position="200,200" size="150,30" noWrap="1" zPosition="1" valign="center" font="Regular; 20" halign="left" backgroundColor="#00000000" foregroundColor="#00ffffff" />
+		<eLabel position="20,200" size="6,40" backgroundColor="#00e61700" /> <!-- Should be a pixmap -->
+		<eLabel position="190,200" size="6,40" backgroundColor="#0061e500" /> <!-- Should be a pixmap -->
+	</screen>
+	"""
+
+	def __init__(self, session):
+		Screen.__init__(self, session)
+		self.skinName = "MultiBoot"
+		self.setTitle(_("Multiboot image manager"))
+		self.title = screentitle
+		if SystemInfo["HasHiSi"] and not pathExists('/dev/sda4'):
+			self["key_red"] = StaticText(_("Cancel"))
+			self["labe14"] = StaticText(_("Press Init to format SDcard."))
+			self["labe15"] = StaticText("")
+			self["key_yellow"] = StaticText(_("Init SDcard"))
+			self["config"] = ChoiceList(list=[ChoiceEntryComponent('',((""), "Queued"))])
+			self["actions"] = ActionMap(["OkCancelActions", "ColorActions", "DirectionActions", "KeyboardInputActions", "MenuActions"],
+			{
+				"red": boundFunction(self.close, None),
+				"yellow": self.format,
+				"ok": self.erase,
+				"cancel": boundFunction(self.close, None),
+				"up": self.keyUp,
+				"down": self.keyDown,
+				"left": self.keyLeft,
+				"right": self.keyRight,
+				"upRepeated": self.keyUp,
+				"downRepeated": self.keyDown,
+				"leftRepeated": self.keyLeft,
+				"rightRepeated": self.keyRight,
+				"menu": boundFunction(self.close, True),
+			}, -1)
+		else:
+			self["key_red"] = StaticText(_("Cancel"))
+			self["labe14"] = StaticText(_("Use the cursor keys to select an installed image and then Erase button."))
+			self["labe15"] = StaticText(_("Note: slot list does not show current image or empty slots."))
+			self["key_green"] = StaticText(_("Erase"))
+			if SystemInfo["HasHiSi"]:
+				self["key_yellow"] = StaticText(_("Init SDcard"))
+			else:
+				self["key_yellow"] = StaticText("")
+			self["config"] = ChoiceList(list=[ChoiceEntryComponent('',((_("Retrieving image slots - Please wait...")), "Queued"))])
+			imagedict = []
+			self.getImageList = None
+			self.startit()
+
+			self["actions"] = ActionMap(["OkCancelActions", "ColorActions", "DirectionActions", "KeyboardInputActions", "MenuActions"],
+			{
+				"red": boundFunction(self.close, None),
+				"green": self.erase,
+				"yellow": self.format,
+				"ok": self.erase,
+				"cancel": boundFunction(self.close, None),
+				"up": self.keyUp,
+				"down": self.keyDown,
+				"left": self.keyLeft,
+				"right": self.keyRight,
+				"upRepeated": self.keyUp,
+				"downRepeated": self.keyDown,
+				"leftRepeated": self.keyLeft,
+				"rightRepeated": self.keyRight,
+				"menu": boundFunction(self.close, True),
+			}, -1)
+		self.onLayoutFinish.append(self.layoutFinished)
+
+	def layoutFinished(self):
+		self.setTitle(self.title)
+
+	def startit(self):
+		self.getImageList = GetImagelist(self.ImageList)
+
+	def ImageList(self, imagedict):
+		list = []
+		mode = GetCurrentImageMode() or 0
+		currentimageslot = GetCurrentImage()
+		for x in sorted(imagedict.keys()):
+			if imagedict[x]["imagename"] != _("Empty slot") and x != currentimageslot:
+				list.append(ChoiceEntryComponent('',((_("slot%s - %s ")) % (x, imagedict[x]['imagename']), x)))
+		self["config"].setList(list)
+
+	def erase(self):
+		self.currentSelected = self["config"].l.getCurrentSelection()
+		if self.currentSelected != None:
+			if self.currentSelected[0][1] != "Queued":
+				if SystemInfo["HasRootSubdir"]:
+					message = _("Removal of this slot will not show in %s Gui.  Are you sure you want to delete image slot %s ?" %(getMachineBuild(), self.currentSelected[0][1]))
+					ybox = self.session.openWithCallback(self.doErase, MessageBox, message, MessageBox.TYPE_YESNO, default=True)
+					ybox.setTitle(_("Remove confirmation"))
+				else:
+					message = _("Are you sure you want to delete image slot %s ?" %self.currentSelected[0][1])
+					ybox = self.session.openWithCallback(self.doErase, MessageBox, message, MessageBox.TYPE_YESNO, default=True)
+					ybox.setTitle(_("Remove confirmation"))
+
+	def doErase(self, answer):
+		if answer is True:
+			sloterase = EmptySlot(self.currentSelected[0][1], self.startit)
+
+	def format(self):
+		if SystemInfo["HasHiSi"]:
+			self.TITLE = _("Init SDCARD")
+			if "sda" in open('/sys/firmware/devicetree/base/chosen/bootargs', 'r').read():
+				self.session.open(MessageBox, _("Multiboot manager - Cannot initialise SDcard when running image on SDcard."), MessageBox.TYPE_INFO, timeout=10)
+				self.close
+			else:
+				message = _("Multiboot manager - to use this routine %s image must be at OpenViX 4.2.043 or later and USB flashed - reply Yes to continue" %getMachineBuild())
+				ybox = self.session.openWithCallback(self.doFormat, MessageBox, message, MessageBox.TYPE_YESNO, default=True)
+				ybox.setTitle(_("Remove confirmation"))
+
+	def doFormat(self, answer):
+		if answer is True:
+			from Components.Harddisk import Harddisk
+			sda = "sda"
+			size = Harddisk(sda).diskSize()
+			if size/1024 < 7:
+				self.session.open(MessageBox, _("Multiboot manager - The SDcard must be at least 8MB."), MessageBox.TYPE_INFO, timeout=10)
+				self.close
+			else:
+				IMAGE_ALIGNMENT=1024
+				KERNEL_PARTITION_SIZE=8192
+				ROOTFS_PARTITION_SIZE=2097152
+				PARTED_START_KERNEL2 = IMAGE_ALIGNMENT
+				PARTED_END_KERNEL2 = int(PARTED_START_KERNEL2) + int(KERNEL_PARTITION_SIZE)
+				PARTED_START_ROOTFS2 = PARTED_END_KERNEL2
+				PARTED_END_ROOTFS2 = int(PARTED_END_KERNEL2) + int(ROOTFS_PARTITION_SIZE)
+				PARTED_START_KERNEL3 = PARTED_END_ROOTFS2
+				PARTED_END_KERNEL3 = int(PARTED_END_ROOTFS2) + int(KERNEL_PARTITION_SIZE)
+				PARTED_START_ROOTFS3 = PARTED_END_KERNEL3
+				PARTED_END_ROOTFS3 = int(PARTED_END_KERNEL3) + int(ROOTFS_PARTITION_SIZE)
+
+				self.session.open(MessageBox, _("Multiboot manager - SDcard initialization run, please restart your Image."), MessageBox.TYPE_INFO, timeout=10)
+				cmdlist = []
+				cmdlist.append("for n in /dev/%s* ; do umount $n > /dev/null 2>&1 ; done"%sda)
+				cmdlist.append("for n in /dev/%s* ; do parted -s /dev/%s rm  ${n:8} > /dev/null 2>&1; done"%(sda,sda))
+				cmdlist.append("dd if=/dev/zero of=/dev/%s bs=512 count=10240 conv=notrunc"%sda)
+				cmdlist.append("partprobe /dev/%s"%sda)
+				cmdlist.append("parted -s /dev/%s mklabel gpt"%sda)
+				cmdlist.append("parted -s /dev/%s unit KiB mkpart kernel2 ext2 %s %s"%(sda,PARTED_START_KERNEL2,PARTED_END_KERNEL2))
+				cmdlist.append("parted -s /dev/%s unit KiB mkpart rootfs2 ext4 %s %s "%(sda,PARTED_START_ROOTFS2,PARTED_END_ROOTFS2))
+				cmdlist.append("parted -s /dev/%s unit KiB mkpart kernel3 ext2 %s %s"%(sda,PARTED_START_KERNEL3,PARTED_END_KERNEL3))
+				cmdlist.append("parted -s /dev/%s unit KiB mkpart rootfs3 ext4 %s %s "%(sda,PARTED_START_ROOTFS3,PARTED_END_ROOTFS3))
+				cmdlist.append("parted -s /dev/%s unit KiB mkpart userdata ext4 %s 100%% "%(sda,PARTED_END_ROOTFS3))
+				cmdlist.append("for n in /dev/%s{1..5} ; do mkfs.ext4 $n ; done"%sda)   
+				cmdlist.append("partprobe /dev/%s"%sda)
+				self.session.open(Console, title = self.TITLE, cmdlist = cmdlist, closeOnSuccess = True)
+		else:
+			self.close()
+
+	def selectionChanged(self):
+		pass
+
+	def keyLeft(self):
+		self["config"].instance.moveSelection(self["config"].instance.moveUp)
+		self.selectionChanged()
+
+	def keyRight(self):
+		self["config"].instance.moveSelection(self["config"].instance.moveDown)
+		self.selectionChanged()
+
+	def keyUp(self):
+		self["config"].instance.moveSelection(self["config"].instance.moveUp)
+		self.selectionChanged()
+
+	def keyDown(self):
+		self["config"].instance.moveSelection(self["config"].instance.moveDown)
+		self.selectionChanged()

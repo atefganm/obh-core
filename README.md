@@ -1,1 +1,4 @@
-# obh-core
+obh-core
+========
+
+OpenBH Core plugin
